@@ -1,364 +1,375 @@
 import streamlit as st
-import plotly.express as px
 import pandas as pd
 import numpy as np
-import os
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, timedelta
 import warnings
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL
+from sqlalchemy import create_engine
+from urllib.parse import quote_plus
+
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Unified Analytics Dashboard", page_icon=":bar_chart:", layout="wide")
+# Page configuration
+st.set_page_config(page_title="Air Quality Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-st.title(" :bar_chart: Unified Data Analytics Dashboard")
-st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
+# Custom CSS for better styling
+st.markdown("""
+    <style>
+    .main {
+        padding-top: 2rem;
+    }
+    .metric-card {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 10px;
+        margin-bottom: 1rem;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Sidebar for data source selection
-st.sidebar.header("📊 Data Source")
-data_source = st.sidebar.radio("Choose data source:", ["PostgreSQL Database", "CSV Files"])
+# Database connection settings in sidebar
+st.sidebar.title("🔧 Database Connection")
+st.sidebar.divider()
 
-all_data = {}
+db_host = st.sidebar.text_input("Host", value="aws-1-ap-southeast-1.pooler.supabase.com")
+db_port = st.sidebar.text_input("Port", value="5432")
+db_name = st.sidebar.text_input("Database", value="postgres")
+db_user = st.sidebar.text_input("Username", value="postgres.bkqhsxdynslfdtkcucij")
+db_password = st.sidebar.text_input("Password", type="password", value="Duy@12345")
 
-if data_source == "PostgreSQL Database":
-    st.sidebar.subheader("🔐 Database Connection")
-    
-    db_host = st.sidebar.text_input("Host", value="aws-1-ap-southeast-1.pooler.supabase.com")
-    db_port = st.sidebar.text_input("Port", value="5432")
-    db_name = st.sidebar.text_input("Database", value="postgres")
-    db_user = st.sidebar.text_input("Username", value="postgres.ayfafsqyjucvbkuwqxxy")
-    db_password = st.sidebar.text_input("Password", type="password", value="Duy@12345")
-    
-    if st.sidebar.button("🔌 Connect & Load All Tables"):
-        try:
-            url = URL.create(
-                drivername="postgresql+psycopg2",
-                username=db_user or None,
-                password=db_password or None,
-                host=db_host,
-                port=int(db_port) if db_port else None,
-                database=db_name,
-            )
-            engine = create_engine(url, pool_pre_ping=True)
-            
-            with engine.connect() as conn:
-                result = conn.execute(
-                    text("""
-                        SELECT table_name
-                        FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                        ORDER BY table_name
-                    """)
-                )
-                table_names = [row[0] for row in result.fetchall()]
-            
-            for table in table_names:
-                try:
-                    all_data[table] = pd.read_sql(f'SELECT * FROM "{table}"', engine)
-                    st.sidebar.success(f"✅ {table}: {len(all_data[table]):,} rows")
-                except Exception as e:
-                    st.sidebar.warning(f"⚠️ {table}: {str(e)}")
-            
-            st.session_state['all_data'] = all_data
-            st.session_state['data_loaded'] = True
-            
-        except Exception as e:
-            st.sidebar.error(f"❌ Connection failed: {str(e)}")
-            st.stop()
-    
-    if st.session_state.get('data_loaded'):
-        all_data = st.session_state.get('all_data', {})
-    else:
-        st.info("👈 Enter database credentials and click 'Connect & Load All Tables'")
-        st.stop()
+st.sidebar.divider()
+st.sidebar.title("🔍 Filters")
+st.sidebar.divider()
 
-else:
-    # CSV Files mode
-    st.info("📁 Loading all CSV files from directory...")
+# Load data from database
+@st.cache_data
+def load_data_from_db():
     try:
-        base_path = r"D:\DaiHoc\Kho du lieu\Dashboard"
-        os.chdir(base_path)
+        # Create connection string with safe URL-encoding for credentials
+        encoded_user = quote_plus(db_user)
+        encoded_password = quote_plus(db_password)
+        connection_string = (
+            f"postgresql+psycopg2://{encoded_user}:{encoded_password}@{db_host}:{db_port}/{db_name}"
+        )
+        engine = create_engine(connection_string, pool_pre_ping=True)
         
-        csv_files = ['Fact_AirQuality.csv', 'Fact_Forecast.csv', 'Dim_Time.csv', 'Dim_Date.csv', 
-                     'Dim_Location.csv', 'Dim_Parameter.csv', 'Dim_Model.csv']
+        # Load data from tables using SQL queries (more robust than read_sql_table)
+        fact_air = pd.read_sql_query('SELECT * FROM "Fact_AirQuality"', engine)
+        fact_forecast = pd.read_sql_query('SELECT * FROM "Fact_Forecast"', engine)
+        dim_date = pd.read_sql_query('SELECT * FROM "Dim_Date"', engine)
+        dim_location = pd.read_sql_query('SELECT * FROM "Dim_Location"', engine)
+        dim_time = pd.read_sql_query('SELECT * FROM "Dim_Time"', engine)
+        dim_parameter = pd.read_sql_query('SELECT * FROM "Dim_Parameter"', engine)
         
-        for file in csv_files:
-            try:
-                all_data[file.replace('.csv', '')] = pd.read_csv(file, sep=";", encoding="ISO-8859-1")
-                st.sidebar.success(f"✅ {file}: {len(all_data[file.replace('.csv', '')]):,} rows")
-            except Exception as e:
-                st.sidebar.warning(f"⚠️ {file}: {str(e)}")
-        
-        if not all_data:
-            st.error("No data loaded. Please check CSV files in the directory.")
-            st.stop()
-            
+        return fact_air, fact_forecast, dim_date, dim_location, dim_time, dim_parameter, None
     except Exception as e:
-        st.error(f"Error loading CSV files: {str(e)}")
-        st.stop()
+        return None, None, None, None, None, None, str(e)
 
-# ========== MAIN ANALYSIS SECTION ==========
-if not all_data:
-    st.warning("No data available. Please load data first.")
+# Load all data
+fact_air, fact_forecast, dim_date, dim_location, dim_time, dim_parameter, db_error = load_data_from_db()
+
+if db_error:
+    st.error(f"❌ Database connection error: {db_error}")
+    st.info("💡 Please check your database credentials in the sidebar and refresh the page.")
     st.stop()
 
-st.markdown("---")
-st.header("📊 Comprehensive Multi-Table Analysis")
-st.markdown(f"**Total Tables Loaded:** {len(all_data)}")
+if fact_air is None:
+    st.error("❌ Unable to load data from database")
+    st.stop()
 
-# Process each table
-for table_name, df in all_data.items():
-    st.markdown("---")
-    st.markdown(f"## 📋 {table_name}")
-    st.markdown(f"**Rows:** {len(df):,} | **Columns:** {len(df.columns)}")
+# Merge data to get meaningful information
+def prepare_data():
+    # Merge fact_air with dimensions
+    df = fact_air.merge(dim_date, on='DateKey', how='left')
+    df = df.merge(dim_time, on='TimeKey', how='left')
+    df = df.merge(dim_parameter, on='ParameterKey', how='left')
+    df = df.merge(dim_location, on='LocationKey', how='left')
     
-    # Auto-detect columns
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-    date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+    # Convert dates
+    if 'FullDate' in df.columns:
+        # DB may already return datetime/date types; avoid forcing a specific format
+        df['FullDate'] = pd.to_datetime(df['FullDate'], errors='coerce')
     
-    # Find date column
-    date_column = date_cols[0] if date_cols else None
-    if not date_column:
-        potential_date_cols = [c for c in df.columns if 'date' in c.lower() or 'fulldate' in c.lower()]
-        for col in potential_date_cols:
-            parsed = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True)
-            if parsed.notna().sum() > 0:
-                df[col] = parsed
-                date_column = col
-                break
+    # Convert Value column to numeric
+    df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
     
-    # Auto-join dimensions if this is a fact table
-    if any(key in df.columns for key in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']):
-        dimension_tables = {
-            'DateKey': 'Dim_Date',
-            'TimeKey': 'Dim_Time',
-            'LocationKey': 'Dim_Location',
-            'ParameterKey': 'Dim_Parameter',
-            'ModelKey': 'Dim_Model'
-        }
-        
-        for key_col, dim_table in dimension_tables.items():
-            if key_col in df.columns and dim_table in all_data:
-                try:
-                    dim_df = all_data[dim_table].copy()
-                    if dim_table == 'Dim_Date' and 'FullDate' in dim_df.columns:
-                        dim_df['FullDate'] = pd.to_datetime(dim_df['FullDate'], errors='coerce')
-                        if not date_column:
-                            date_column = 'FullDate'
-                    df = df.merge(dim_df, on=key_col, how='left', suffixes=('', f'_{dim_table}'))
-                except Exception as e:
-                    pass
+    # Remove rows with NaN values in Value column
+    df = df.dropna(subset=['Value'])
     
-    # Update column lists after joins
-    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    return df
+
+data = prepare_data()
+
+# Date range filter
+date_range = st.sidebar.date_input(
+    "Select Date Range",
+    value=(data['FullDate'].min().date(), data['FullDate'].max().date()),
+    min_value=data['FullDate'].min().date(),
+    max_value=data['FullDate'].max().date()
+)
+
+# Parameter filter
+parameters = st.sidebar.multiselect(
+    "Select Parameters",
+    options=sorted(data['ParameterName'].unique()),
+    default=sorted(data['ParameterName'].unique())
+)
+
+# Filter data based on selections
+filtered_data = data[
+    (data['FullDate'].dt.date >= date_range[0]) &
+    (data['FullDate'].dt.date <= date_range[1]) &
+    (data['ParameterName'].isin(parameters))
+].copy()
+
+# Main dashboard
+st.title("🌍 Air Quality Monitoring Dashboard")
+location_name = dim_location['LocationName'].iloc[0] if len(dim_location) > 0 else 'N/A'
+st.markdown(f"**Location:** {location_name} | **Last Updated:** {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+#st.markdown(f"**Data Source:** PostgreSQL Database | **Connection:** {db_host}:{db_port}")
+st.divider()
+
+# KPI Metrics
+col1, col2, col3, col4 = st.columns(4)
+
+# Calculate metrics
+if len(filtered_data) > 0:
+    # Average by Day
+    avg_day = filtered_data.groupby('FullDate')['Value'].mean().mean()
     
-    # Find value and category columns
-    value_col = None
-    if "Value" in numeric_cols:
-        value_col = "Value"
-    elif "Sales" in numeric_cols:
-        value_col = "Sales"
-    elif numeric_cols:
-        value_col = [c for c in numeric_cols if c not in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']]
-        value_col = value_col[0] if value_col else None
+    # Average by Week
+    filtered_data_copy = filtered_data.copy()
+    filtered_data_copy['Week'] = filtered_data_copy['FullDate'].dt.isocalendar().week
+    avg_week = filtered_data_copy.groupby('Week')['Value'].mean().mean()
     
-    category_col = None
-    suitable_cats = [c for c in categorical_cols if df[c].nunique() < 50 and df[c].nunique() > 1]
-    category_col = suitable_cats[0] if suitable_cats else None
+    # Average by Month
+    filtered_data_copy['Month'] = filtered_data_copy['FullDate'].dt.month
+    avg_month = filtered_data_copy.groupby('Month')['Value'].mean().mean()
     
-    # === VISUALIZATIONS ===
-    col1, col2 = st.columns(2)
-    
-    # Chart 1: Bar chart
-    if category_col:
-        with col1:
-            if value_col:
-                st.subheader(f"{category_col} by {value_col}")
-                chart_df = df.groupby(category_col)[value_col].sum().reset_index()
-                fig = px.bar(chart_df, x=category_col, y=value_col, 
-                            text=[f'{x:,.0f}' for x in chart_df[value_col]],
-                            template="seaborn")
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.subheader(f"Distribution by {category_col}")
-                chart_df = df[category_col].value_counts().reset_index()
-                chart_df.columns = [category_col, 'Count']
-                fig = px.bar(chart_df, x=category_col, y='Count', 
-                            text=[f'{x:,}' for x in chart_df['Count']],
-                            template="seaborn")
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-    
-        with col2:
-            if value_col:
-                st.subheader(f"{category_col} Distribution (Pie)")
-                chart_df = df.groupby(category_col)[value_col].sum().reset_index()
-                fig = px.pie(chart_df, values=value_col, names=category_col, hole=0.5)
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.subheader(f"{category_col} Distribution (Pie)")
-                chart_df = df[category_col].value_counts().reset_index()
-                chart_df.columns = [category_col, 'Count']
-                fig = px.pie(chart_df, values='Count', names=category_col, hole=0.5)
-                st.plotly_chart(fig, use_container_width=True)
-    
-    # === SPECIALIZED ANALYTICS ===
-    
-    # Dim_Time specific analytics
-    if 'Hour' in df.columns and 'Minute' in df.columns:
-        st.markdown("### ⏱️ Time-Specific Analytics")
-        tcol1, tcol2 = st.columns(2)
-        
-        with tcol1:
-            hour_counts = df['Hour'].dropna().astype(int).value_counts().sort_index().reset_index()
-            hour_counts.columns = ['Hour', 'Count']
-            fig = px.bar(hour_counts, x='Hour', y='Count', title='Records by Hour', template='seaborn')
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with tcol2:
-            fig = px.histogram(df.dropna(subset=['Minute']).astype({'Minute': 'int'}),
-                             x='Minute', nbins=12, title='Minute Distribution', template='seaborn')
-            st.plotly_chart(fig, use_container_width=True)
-        
-        # AM/PM analysis
-        time_text_col = 'TimeStr' if 'TimeStr' in df.columns else ('TimeObj' if 'TimeObj' in df.columns else None)
-        if time_text_col:
-            tcol3, tcol4 = st.columns(2)
-            texts = df[time_text_col].astype(str)
-            period = np.where(texts.str.contains('SA', case=False, na=False), 'AM',
-                            np.where(texts.str.contains('CH', case=False, na=False), 'PM', 'Unknown'))
-            
-            with tcol3:
-                pie_df = pd.DataFrame({'Period': period})['Period'].value_counts().reset_index()
-                pie_df.columns = ['Period', 'Count']
-                fig = px.pie(pie_df, values='Count', names='Period', hole=0.5, title='AM vs PM Distribution')
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with tcol4:
-                top_times = texts.value_counts().head(20).reset_index()
-                top_times.columns = [time_text_col, 'Count']
-                fig = px.bar(top_times, x=time_text_col, y='Count', title=f'Top 20 {time_text_col}', template='seaborn')
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-    
-    # Fact_AirQuality analytics
-    if 'Value' in df.columns and 'ParameterKey' in df.columns and 'LocationKey' in df.columns:
-        st.markdown("### 🌫️ Air Quality Analytics")
-        
-        df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
-        
-        # Parse dates/times
-        if 'DateKey' in df.columns and 'DateParsed' not in df.columns:
-            df['DateParsed'] = pd.to_datetime(df['DateKey'].astype(str), errors='coerce')
-        
-        if 'TimeKey' in df.columns and 'HourFromTimeKey' not in df.columns:
-            tk = df['TimeKey'].astype(str).str.zfill(4)
-            df['HourFromTimeKey'] = pd.to_numeric(tk.str.slice(0, 2), errors='coerce')
-        
-        aq1, aq2 = st.columns(2)
-        
-        with aq1:
-            fig = px.histogram(df.dropna(subset=['Value']), x='Value', nbins=40,
-                             title='Value Distribution', template='seaborn')
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with aq2:
-            if 'HourFromTimeKey' in df.columns:
-                hourly = df.groupby('HourFromTimeKey')['Value'].mean().reset_index()
-                fig = px.line(hourly, x='HourFromTimeKey', y='Value',
-                            title='Average Value by Hour', template='seaborn', markers=True)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        aq3, aq4 = st.columns(2)
-        
-        with aq3:
-            if 'ParameterName' in df.columns:
-                param_agg = df.groupby('ParameterName')['Value'].mean().reset_index()
-                fig = px.bar(param_agg, x='ParameterName', y='Value',
-                           title='Average Value by Parameter', template='seaborn')
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        with aq4:
-            if 'LocationName' in df.columns:
-                loc_agg = df.groupby('LocationName')['Value'].mean().reset_index()
-                fig = px.bar(loc_agg, x='LocationName', y='Value',
-                           title='Average Value by Location', template='seaborn')
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        # Time series
-        if 'DateParsed' in df.columns:
-            daily_agg = df.groupby('DateParsed')['Value'].mean().reset_index()
-            fig = px.line(daily_agg, x='DateParsed', y='Value',
-                        title='Air Quality Trend Over Time', template='seaborn', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Fact_Forecast analytics
-    if 'ForecastID' in df.columns and 'Value' in df.columns:
-        st.markdown("### 🔮 Forecast Analytics")
-        
-        df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
-        
-        if 'DateKey' in df.columns and 'DateParsed' not in df.columns:
-            df['DateParsed'] = pd.to_datetime(df['DateKey'].astype(str), errors='coerce')
-        
-        if 'TimeKey' in df.columns and 'HourFromTimeKey' not in df.columns:
-            tk = df['TimeKey'].astype(str).str.zfill(4)
-            df['HourFromTimeKey'] = pd.to_numeric(tk.str.slice(0, 2), errors='coerce')
-        
-        fc1, fc2 = st.columns(2)
-        
-        with fc1:
-            fig = px.histogram(df.dropna(subset=['Value']), x='Value', nbins=30,
-                             title='Forecast Value Distribution', template='seaborn')
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with fc2:
-            if 'HourFromTimeKey' in df.columns:
-                hourly = df.groupby('HourFromTimeKey')['Value'].mean().reset_index()
-                fig = px.line(hourly, x='HourFromTimeKey', y='Value',
-                            title='Average Forecast by Hour', template='seaborn', markers=True)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        fc3, fc4 = st.columns(2)
-        
-        with fc3:
-            if 'ParameterName' in df.columns:
-                param_agg = df.groupby('ParameterName')['Value'].mean().reset_index()
-                fig = px.bar(param_agg, x='ParameterName', y='Value',
-                           title='Average Forecast by Parameter', template='seaborn')
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        with fc4:
-            if 'ModelName' in df.columns:
-                model_agg = df.groupby('ModelName')['Value'].mean().reset_index()
-                fig = px.bar(model_agg, x='ModelName', y='Value',
-                           title='Average Forecast by Model', template='seaborn')
-                fig.update_layout(xaxis_tickangle=-45)
-                st.plotly_chart(fig, use_container_width=True)
-        
-        if 'DateParsed' in df.columns:
-            daily = df.groupby('DateParsed')['Value'].mean().reset_index()
-            fig = px.line(daily, x='DateParsed', y='Value',
-                        title='Forecast Trend Over Time', template='seaborn', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Data preview
-    with st.expander(f"📄 View {table_name} Data"):
-        st.dataframe(df.head(100), use_container_width=True)
-    
-    # Download option
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        label=f"📥 Download {table_name} as CSV",
-        data=csv,
-        file_name=f"{table_name}.csv",
-        mime='text/csv',
+    median_value = filtered_data['Value'].median()
+else:
+    avg_day = 0
+    avg_week = 0
+    avg_month = 0
+    median_value = 0
+
+with col1:
+    st.metric(
+        label="📆 Average Day",
+        value=f"{avg_day:,.0f}",
+        delta="Daily Avg" if avg_day > 0 else "→ No Data"
     )
 
-st.markdown("---")
-st.success("✅ All tables analyzed successfully!")
+with col2:
+    st.metric(
+        label="📅 Average Week",
+        value=f"{avg_week:,.0f}",
+        delta="Weekly Avg" if avg_week > 0 else "→ No Data"
+    )
+
+with col3:
+    st.metric(
+        label="📋 Average Month",
+        value=f"{avg_month:,.0f}",
+        delta="Monthly Avg" if avg_month > 0 else "→ No Data"
+    )
+
+with col4:
+    st.metric(
+        label="📊 Median Value",
+        value=f"{median_value:,.0f}",
+        delta="Mid-Point" if median_value > 0 else "→ No Data"
+    )
+
+st.divider()
+
+# Charts Section
+col1, col2 = st.columns(2)
+
+# Time series chart
+with col1:
+    st.subheader("📈 Trend Over Time")
+    
+    if len(filtered_data) > 0:
+        # Group by date and parameter
+        trend_data = filtered_data.groupby(['FullDate', 'ParameterName'])['Value'].mean().reset_index()
+        
+        fig_trend = px.line(
+            trend_data,
+            x='FullDate',
+            y='Value',
+            color='ParameterName',
+            title="Air Quality Parameters - Daily Average",
+            labels={'FullDate': 'Date', 'Value': 'Value (µg/m³)', 'ParameterName': 'Parameter'}
+        )
+        fig_trend.update_layout(
+            hovermode='x unified',
+            height=400,
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("No data available for selected filters")
+
+# Distribution by parameter
+with col2:
+    st.subheader("📊 Distribution by Parameter")
+    
+    if len(filtered_data) > 0:
+        param_data = filtered_data.groupby('ParameterName')['Value'].mean().sort_values(ascending=False)
+        
+        fig_bar = px.bar(
+            x=param_data.index,
+            y=param_data.values,
+            labels={'x': 'Parameter', 'y': 'Average Value (µg/m³)'},
+            title="Average Values by Parameter",
+            color=param_data.values,
+            color_continuous_scale="Viridis"
+        )
+        fig_bar.update_layout(
+            hovermode='x',
+            height=400,
+            showlegend=False,
+            margin=dict(l=0, r=0, t=30, b=0)
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+    else:
+        st.info("No data available for selected filters")
+
+st.divider()
+
+# Hourly pattern analysis
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("⏰ Hourly Pattern")
+    
+    if len(filtered_data) > 0:
+        hourly_data = filtered_data.groupby('Hour')['Value'].mean().reset_index()
+        
+        fig_hourly = go.Figure()
+        fig_hourly.add_trace(go.Scatter(
+            x=hourly_data['Hour'],
+            y=hourly_data['Value'],
+            mode='lines+markers',
+            name='Average Value',
+            line=dict(color='#1f77b4', width=3),
+            marker=dict(size=8)
+        ))
+        fig_hourly.update_layout(
+            title="Hourly Air Quality Pattern",
+            xaxis_title="Hour of Day",
+            yaxis_title="Value (µg/m³)",
+            hovermode='x unified',
+            height=400,
+            margin=dict(l=0, r=0, t=30, b=0),
+            xaxis=dict(tickmode='linear', tick0=0, dtick=4)
+        )
+        st.plotly_chart(fig_hourly, use_container_width=True)
+    else:
+        st.info("No data available for selected filters")
+
+# Forecast vs Actual
+with col2:
+    st.subheader("🔮 Forecast vs Actual")
+    
+    # Prepare forecast data
+    forecast_data = fact_forecast.merge(dim_date, on='DateKey', how='left')
+    forecast_data = forecast_data.merge(dim_parameter, on='ParameterKey', how='left')
+    forecast_data = forecast_data.merge(dim_time, on='TimeKey', how='left')
+    
+    if 'FullDate' in forecast_data.columns:
+        forecast_data['FullDate'] = pd.to_datetime(forecast_data['FullDate'], format='%d/%m/%Y', errors='coerce')
+    
+    # Convert Value column to numeric
+    forecast_data['Value'] = pd.to_numeric(forecast_data['Value'], errors='coerce')
+    forecast_data = forecast_data.dropna(subset=['Value'])
+    
+    # Get latest forecast
+    if len(forecast_data) > 0 and 'Hour' in forecast_data.columns and len(filtered_data) > 0:
+        hourly_data = filtered_data.groupby('Hour')['Value'].mean().reset_index()
+        latest_forecast = forecast_data.groupby('Hour')['Value'].mean().reset_index()
+        latest_actual = hourly_data.copy()
+        latest_actual.columns = ['Hour', 'Actual']
+        
+        comparison = latest_forecast.merge(
+            latest_actual,
+            on='Hour',
+            how='left'
+        )
+        comparison.columns = ['Hour', 'Forecast', 'Actual']
+        
+        fig_forecast = go.Figure()
+        fig_forecast.add_trace(go.Scatter(
+            x=comparison['Hour'],
+            y=comparison['Forecast'],
+            mode='lines+markers',
+            name='Forecast',
+            line=dict(color='#ff7f0e', width=2, dash='dash')
+        ))
+        fig_forecast.add_trace(go.Scatter(
+            x=comparison['Hour'],
+            y=comparison['Actual'],
+            mode='lines+markers',
+            name='Actual',
+            line=dict(color='#2ca02c', width=2)
+        ))
+        fig_forecast.update_layout(
+            title="Forecast vs Actual Values",
+            xaxis_title="Hour of Day",
+            yaxis_title="Value (µg/m³)",
+            hovermode='x unified',
+            height=400,
+            margin=dict(l=0, r=0, t=30, b=0),
+            xaxis=dict(tickmode='linear', tick0=0, dtick=4)
+        )
+        st.plotly_chart(fig_forecast, use_container_width=True)
+    else:
+        st.info("No forecast data available")
+
+st.divider()
+
+# Data statistics
+st.subheader("📋 Data Statistics")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("Total Records", f"{len(filtered_data):,}")
+
+with col2:
+    st.metric("Date Range", f"{(date_range[1] - date_range[0]).days} days")
+
+with col3:
+    st.metric("Parameters Selected", len(parameters))
+
+# Detailed data table
+st.subheader("🔍 Detailed Data")
+
+if len(filtered_data) > 0:
+    display_data = filtered_data[['FullDate', 'TimeStr', 'ParameterName', 'Value', 'Unit', 'LocationName']].copy()
+    display_data.columns = ['Date', 'Time', 'Parameter', 'Value', 'Unit', 'Location']
+    display_data = display_data.sort_values('Date', ascending=False)
+    
+    st.dataframe(
+        display_data.head(100),
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    st.caption(f"Showing top 100 records out of {len(display_data):,} total records")
+else:
+    st.info("No data available for the selected filters")
+
+# Footer
+st.divider()
+st.markdown(
+    """
+    <div style='text-align: center; color: gray; font-size: 0.8em; margin-top: 2rem;'>
+        <p>Air Quality Monitoring Dashboard | Data Source: PostgreSQL Database</p>
+        <p>Last Updated: """ + datetime.now().strftime('%d/%m/%Y %H:%M:%S') + """</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
