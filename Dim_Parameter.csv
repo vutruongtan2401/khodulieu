@@ -1,0 +1,7 @@
+ParameterName;ParameterKey;Unit
+co;1;µg/m³
+no2;2;µg/m³
+o3;3;µg/m³
+pm10;4;µg/m³
+pm25;5;µg/m³
+so2;6;µg/m³
