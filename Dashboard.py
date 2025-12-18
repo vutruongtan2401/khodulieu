@@ -1,36 +1,35 @@
 import streamlit as st
 import plotly.express as px
 import pandas as pd
+import numpy as np
 import os
 import warnings
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="Superstore!!!", page_icon=":bar_chart:",layout="wide")
+st.set_page_config(page_title="Unified Analytics Dashboard", page_icon=":bar_chart:", layout="wide")
 
-st.title(" :bar_chart: Sample SuperStore EDA")
-st.markdown('<style>div.block-container{padding-top:1rem;}</style>',unsafe_allow_html=True)
+st.title(" :bar_chart: Unified Data Analytics Dashboard")
+st.markdown('<style>div.block-container{padding-top:1rem;}</style>', unsafe_allow_html=True)
 
 # Sidebar for data source selection
 st.sidebar.header("📊 Data Source")
-data_source = st.sidebar.radio("Choose data source:", ["PostgreSQL Database", "Upload File"])
+data_source = st.sidebar.radio("Choose data source:", ["PostgreSQL Database", "CSV Files"])
+
+all_data = {}
 
 if data_source == "PostgreSQL Database":
     st.sidebar.subheader("🔐 Database Connection")
-
-    # Database connection parameters
+    
     db_host = st.sidebar.text_input("Host", value="aws-1-ap-southeast-1.pooler.supabase.com")
     db_port = st.sidebar.text_input("Port", value="5432")
     db_name = st.sidebar.text_input("Database", value="postgres")
-    db_user = st.sidebar.text_input("Username", value="")
-    db_password = st.sidebar.text_input("Password", type="password")
-
-    connect_clicked = st.sidebar.button("Connect to Database")
-
-    if connect_clicked:
+    db_user = st.sidebar.text_input("Username", value="postgres.ayfafsqyjucvbkuwqxxy")
+    db_password = st.sidebar.text_input("Password", type="password", value="Duy@12345")
+    
+    if st.sidebar.button("🔌 Connect & Load All Tables"):
         try:
-            # Build a safe URL (handles special characters like @ in password)
             url = URL.create(
                 drivername="postgresql+psycopg2",
                 username=db_user or None,
@@ -40,8 +39,7 @@ if data_source == "PostgreSQL Database":
                 database=db_name,
             )
             engine = create_engine(url, pool_pre_ping=True)
-
-            # Lấy danh sách bảng trong schema public
+            
             with engine.connect() as conn:
                 result = conn.execute(
                     text("""
@@ -49,278 +47,318 @@ if data_source == "PostgreSQL Database":
                         FROM information_schema.tables
                         WHERE table_schema = 'public'
                         ORDER BY table_name
-                    """
-                ))
+                    """)
+                )
                 table_names = [row[0] for row in result.fetchall()]
-
-            st.session_state['engine'] = engine
-            st.session_state['table_names'] = table_names
-            st.session_state['connected'] = True
-            st.sidebar.success("✅ Connected! Chọn bảng bên dưới để load dữ liệu")
+            
+            for table in table_names:
+                try:
+                    all_data[table] = pd.read_sql(f'SELECT * FROM "{table}"', engine)
+                    st.sidebar.success(f"✅ {table}: {len(all_data[table]):,} rows")
+                except Exception as e:
+                    st.sidebar.warning(f"⚠️ {table}: {str(e)}")
+            
+            st.session_state['all_data'] = all_data
+            st.session_state['data_loaded'] = True
+            
         except Exception as e:
             st.sidebar.error(f"❌ Connection failed: {str(e)}")
             st.stop()
-
-    if not st.session_state.get('connected'):
-        st.info("👈 Nhập thông tin kết nối và bấm 'Connect to Database'")
-        st.stop()
-
-    table_names = st.session_state.get('table_names', [])
-    if not table_names:
-        st.sidebar.warning("Không tìm thấy bảng nào trong schema public")
-        st.stop()
-
-    selected_table = st.sidebar.selectbox("Table Name", table_names, key="table_select")
-
-    if st.sidebar.button("Load Table"):
-        try:
-            df = pd.read_sql(f'SELECT * FROM "{selected_table}"', st.session_state['engine'])
-            st.session_state['df'] = df
-            st.sidebar.success(f"Loaded {len(df)} rows from {selected_table}")
-        except Exception as e:
-            st.sidebar.error(f"Không load được bảng: {str(e)}")
-            st.stop()
-
-    if 'df' in st.session_state:
-        df = st.session_state['df']
-    else:
-        st.info("👈 Chọn bảng và bấm 'Load Table'")
-        st.stop()
-
-else:
-    # File upload option
-    fl = st.file_uploader(":file_folder: Upload a file",type=(["csv","txt","xlsx","xls"]))
-    if fl is not None:
-        filename = fl.name
-        st.write(filename)
-        if filename.endswith('.csv'):
-            df = pd.read_csv(fl, encoding = "ISO-8859-1")
-        else:
-            df = pd.read_excel(fl)
-    else:
-        try:
-            os.chdir(r"D:\DaiHoc\Kho du lieu\Dashboard")
-            df = pd.read_excel("Superstore.xlsx")
-        except Exception as e:
-            st.error(f"Lỗi khi đọc file Superstore.xlsx: {str(e)}")
-            st.warning("⚠️ File Superstore.xlsx bị lỗi hoặc không hợp lệ. Vui lòng upload file dữ liệu của bạn bằng nút upload ở trên!")
-            st.stop()
-
-# ===== AUTO-DETECT COLUMNS =====
-numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
-
-# Find date column (if not already datetime)
-date_column = None
-if date_cols:
-    date_column = date_cols[0]
-else:
-    for col in categorical_cols:
-        try:
-            pd.to_datetime(df[col])
-            date_column = col
-            df[col] = pd.to_datetime(df[col])
-            break
-        except:
-            pass
-
-# ===== AUTO-JOIN ALL DIMENSION TABLES =====
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔗 Auto-Join Dimensions")
-
-dimension_tables = {
-    'DateKey': 'Dim_Date',
-    'TimeKey': 'Dim_Time',
-    'LocationKey': 'Dim_Location',
-    'ParameterKey': 'Dim_Parameter',
-    'ModelKey': 'Dim_Model'
-}
-
-joined_dims = []
-
-for key_col, dim_table in dimension_tables.items():
-    if key_col in df.columns:
-        try:
-            # Try to load dimension table from database or CSV
-            if data_source == "PostgreSQL Database":
-                try:
-                    dim_df = pd.read_sql(f'SELECT * FROM "{dim_table}"', st.session_state['engine'])
-                except:
-                    # Try CSV as fallback
-                    try:
-                        os.chdir(r"D:\DaiHoc\Kho du lieu\Dashboard")
-                        dim_df = pd.read_csv(f"{dim_table}.csv", sep=";")
-                    except:
-                        dim_df = None
-            else:
-                try:
-                    os.chdir(r"D:\DaiHoc\Kho du lieu\Dashboard")
-                    dim_df = pd.read_csv(f"{dim_table}.csv", sep=";")
-                except:
-                    dim_df = None
-            
-            if dim_df is not None:
-                # Convert FullDate to datetime if it's Dim_Date
-                if dim_table == 'Dim_Date' and 'FullDate' in dim_df.columns:
-                    dim_df['FullDate'] = pd.to_datetime(dim_df['FullDate'], errors='coerce')
-                    if not date_column:
-                        date_column = 'FullDate'
-                
-                # Join with dimension table
-                df = df.merge(dim_df, on=key_col, how='left', suffixes=('', f'_{dim_table}'))
-                joined_dims.append(dim_table)
-                
-        except Exception as e:
-            st.sidebar.warning(f"⚠️ {dim_table}: {str(e)}")
-
-if joined_dims:
-    st.sidebar.success(f"✅ Joined: {', '.join(joined_dims)}")
-
-# Update column lists after joins
-numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
-categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
-date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
-
-# Re-check date column after joins
-if not date_column and date_cols:
-    date_column = date_cols[0]
-
-# ===== DATE FILTER =====
-if date_column and date_column in df.columns:
-    # Check if date column has valid dates (not all NaT)
-    valid_dates = df[date_column].dropna()
-    if len(valid_dates) > 0:
-        col1, col2 = st.columns((2))
-        startDate = valid_dates.min()
-        endDate = valid_dates.max()
-        
-        with col1:
-            date1 = pd.to_datetime(st.date_input("Start Date", startDate))
-        with col2:
-            date2 = pd.to_datetime(st.date_input("End Date", endDate))
-        
-        df = df[(df[date_column] >= date1) & (df[date_column] <= date2)].copy()
-
-# ===== CATEGORICAL FILTERS =====
-st.sidebar.header("Choose your filter: ")
-filter_state = {}
-
-for cat_col in categorical_cols[:5]:  # Limit to 5 filters
-    selected = st.sidebar.multiselect(f"Pick {cat_col}", df[cat_col].unique())
-    filter_state[cat_col] = selected
-    if selected:
-        df = df[df[cat_col].isin(selected)]
-
-filtered_df = df
-
-# ===== AUTO VISUALIZATION =====
-col1, col2 = st.columns((2))
-
-# Find suitable columns for visualization
-value_col = None
-if "Sales" in numeric_cols:
-    value_col = "Sales"
-elif "Value" in numeric_cols:
-    value_col = "Value"
-elif numeric_cols:
-    value_col = numeric_cols[0]
-
-category_col = None
-if "Category" in categorical_cols:
-    category_col = "Category"
-elif categorical_cols:
-    category_col = categorical_cols[0]
-
-region_col = None
-if "Region" in categorical_cols:
-    region_col = "Region"
-
-# Chart 1: Category/Group wise Sum OR Count
-if category_col:
-    with col1:
-        if value_col and value_col not in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']:
-            # Has value column - show sum
-            st.subheader(f"{category_col} wise {value_col}")
-            chart_df = filtered_df.groupby(by=[category_col], as_index=False)[value_col].sum()
-            
-            fig = px.bar(chart_df, x=category_col, y=value_col, 
-                        text=[f'${x:,.2f}' if isinstance(x, (int, float)) else x for x in chart_df[value_col]],
-                        template="seaborn")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            # No value column - show count distribution
-            st.subheader(f"Distribution by {category_col}")
-            chart_df = filtered_df[category_col].value_counts().reset_index()
-            chart_df.columns = [category_col, 'Count']
-            
-            fig = px.bar(chart_df, x=category_col, y='Count', 
-                        text=[f'{x:,}' for x in chart_df['Count']],
-                        template="seaborn")
-            st.plotly_chart(fig, use_container_width=True)
-
-# Chart 2: Region/Group wise Pie OR Distribution
-if region_col and value_col and value_col not in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']:
-    with col2:
-        st.subheader(f"{region_col} wise {value_col}")
-        fig = px.pie(filtered_df, values=value_col, names=region_col, hole=0.5)
-        fig.update_traces(text=filtered_df[region_col], textposition="outside")
-        st.plotly_chart(fig, use_container_width=True)
-elif category_col and value_col and value_col not in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']:
-    with col2:
-        st.subheader(f"{category_col} wise {value_col} (Pie)")
-        fig = px.pie(filtered_df, values=value_col, names=category_col, hole=0.5)
-        st.plotly_chart(fig, use_container_width=True)
-elif category_col:
-    with col2:
-        st.subheader(f"{category_col} Distribution (Pie)")
-        chart_df = filtered_df[category_col].value_counts().reset_index()
-        chart_df.columns = [category_col, 'Count']
-        fig = px.pie(chart_df, values='Count', names=category_col, hole=0.5)
-        st.plotly_chart(fig, use_container_width=True)
-
-cl1, cl2 = st.columns((2))
-with cl1:
-    with st.expander("View Data Summary"):
-        if category_col and value_col:
-            summary_df = filtered_df.groupby(by=[category_col], as_index=False)[value_col].sum()
-            st.write(summary_df.style.background_gradient(cmap="Blues"))
-        else:
-            st.write(filtered_df.head(10))
-
-with cl2:
-    with st.expander("Data Info"):
-        st.write(f"**Rows:** {len(filtered_df)}")
-        st.write(f"**Columns:** {', '.join(df.columns)}")
-        st.write(f"**Data Types:**")
-        st.write(df.dtypes)
-st.divider()
-st.markdown("### 📊 Advanced Analytics")
-
-# Time Series (if date column exists)
-if date_column:
-    st.subheader('Time Series Analysis')
-    if value_col:
-        timeseries_df = filtered_df.groupby(filtered_df[date_column].dt.to_period("M"))[value_col].sum().reset_index()
-        timeseries_df[date_column] = timeseries_df[date_column].astype(str)
-        fig2 = px.line(timeseries_df, x=date_column, y=value_col, labels={value_col: "Amount"}, template="plotly_dark")
-        fig2.update_layout(height=500)
-        st.plotly_chart(fig2, use_container_width=True)
-
-# Scatter Plot (if multiple numeric columns)
-if len(numeric_cols) >= 2:
-    st.subheader("Relationship Analysis")
-    col_x = st.selectbox("X axis", numeric_cols, key="scatter_x")
-    col_y = st.selectbox("Y axis", numeric_cols, key="scatter_y", index=min(1, len(numeric_cols)-1))
     
-    if col_x != col_y:
-        fig = px.scatter(filtered_df, x=col_x, y=col_y, 
-                        title=f"{col_x} vs {col_y}")
-        st.plotly_chart(fig, use_container_width=True)
+    if st.session_state.get('data_loaded'):
+        all_data = st.session_state.get('all_data', {})
+    else:
+        st.info("👈 Enter database credentials and click 'Connect & Load All Tables'")
+        st.stop()
 
-st.divider()
+else:
+    # CSV Files mode
+    st.info("📁 Loading all CSV files from directory...")
+    try:
+        base_path = r"D:\DaiHoc\Kho du lieu\Dashboard"
+        os.chdir(base_path)
+        
+        csv_files = ['Fact_AirQuality.csv', 'Fact_Forecast.csv', 'Dim_Time.csv', 'Dim_Date.csv', 
+                     'Dim_Location.csv', 'Dim_Parameter.csv', 'Dim_Model.csv']
+        
+        for file in csv_files:
+            try:
+                all_data[file.replace('.csv', '')] = pd.read_csv(file, sep=";", encoding="ISO-8859-1")
+                st.sidebar.success(f"✅ {file}: {len(all_data[file.replace('.csv', '')]):,} rows")
+            except Exception as e:
+                st.sidebar.warning(f"⚠️ {file}: {str(e)}")
+        
+        if not all_data:
+            st.error("No data loaded. Please check CSV files in the directory.")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"Error loading CSV files: {str(e)}")
+        st.stop()
 
-# Download Data
-st.markdown("### 📥 Download Data")
-csv = filtered_df.to_csv(index=False).encode('utf-8')
-st.download_button('Download Filtered Data', data=csv, file_name="filtered_data.csv", mime="text/csv")
+# ========== MAIN ANALYSIS SECTION ==========
+if not all_data:
+    st.warning("No data available. Please load data first.")
+    st.stop()
+
+st.markdown("---")
+st.header("📊 Comprehensive Multi-Table Analysis")
+st.markdown(f"**Total Tables Loaded:** {len(all_data)}")
+
+# Process each table
+for table_name, df in all_data.items():
+    st.markdown("---")
+    st.markdown(f"## 📋 {table_name}")
+    st.markdown(f"**Rows:** {len(df):,} | **Columns:** {len(df.columns)}")
+    
+    # Auto-detect columns
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    date_cols = df.select_dtypes(include=['datetime64']).columns.tolist()
+    
+    # Find date column
+    date_column = date_cols[0] if date_cols else None
+    if not date_column:
+        potential_date_cols = [c for c in df.columns if 'date' in c.lower() or 'fulldate' in c.lower()]
+        for col in potential_date_cols:
+            parsed = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True)
+            if parsed.notna().sum() > 0:
+                df[col] = parsed
+                date_column = col
+                break
+    
+    # Auto-join dimensions if this is a fact table
+    if any(key in df.columns for key in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']):
+        dimension_tables = {
+            'DateKey': 'Dim_Date',
+            'TimeKey': 'Dim_Time',
+            'LocationKey': 'Dim_Location',
+            'ParameterKey': 'Dim_Parameter',
+            'ModelKey': 'Dim_Model'
+        }
+        
+        for key_col, dim_table in dimension_tables.items():
+            if key_col in df.columns and dim_table in all_data:
+                try:
+                    dim_df = all_data[dim_table].copy()
+                    if dim_table == 'Dim_Date' and 'FullDate' in dim_df.columns:
+                        dim_df['FullDate'] = pd.to_datetime(dim_df['FullDate'], errors='coerce')
+                        if not date_column:
+                            date_column = 'FullDate'
+                    df = df.merge(dim_df, on=key_col, how='left', suffixes=('', f'_{dim_table}'))
+                except Exception as e:
+                    pass
+    
+    # Update column lists after joins
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+    
+    # Find value and category columns
+    value_col = None
+    if "Value" in numeric_cols:
+        value_col = "Value"
+    elif "Sales" in numeric_cols:
+        value_col = "Sales"
+    elif numeric_cols:
+        value_col = [c for c in numeric_cols if c not in ['DateKey', 'TimeKey', 'LocationKey', 'ParameterKey', 'ModelKey']]
+        value_col = value_col[0] if value_col else None
+    
+    category_col = None
+    suitable_cats = [c for c in categorical_cols if df[c].nunique() < 50 and df[c].nunique() > 1]
+    category_col = suitable_cats[0] if suitable_cats else None
+    
+    # === VISUALIZATIONS ===
+    col1, col2 = st.columns(2)
+    
+    # Chart 1: Bar chart
+    if category_col:
+        with col1:
+            if value_col:
+                st.subheader(f"{category_col} by {value_col}")
+                chart_df = df.groupby(category_col)[value_col].sum().reset_index()
+                fig = px.bar(chart_df, x=category_col, y=value_col, 
+                            text=[f'{x:,.0f}' for x in chart_df[value_col]],
+                            template="seaborn")
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.subheader(f"Distribution by {category_col}")
+                chart_df = df[category_col].value_counts().reset_index()
+                chart_df.columns = [category_col, 'Count']
+                fig = px.bar(chart_df, x=category_col, y='Count', 
+                            text=[f'{x:,}' for x in chart_df['Count']],
+                            template="seaborn")
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+    
+        with col2:
+            if value_col:
+                st.subheader(f"{category_col} Distribution (Pie)")
+                chart_df = df.groupby(category_col)[value_col].sum().reset_index()
+                fig = px.pie(chart_df, values=value_col, names=category_col, hole=0.5)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.subheader(f"{category_col} Distribution (Pie)")
+                chart_df = df[category_col].value_counts().reset_index()
+                chart_df.columns = [category_col, 'Count']
+                fig = px.pie(chart_df, values='Count', names=category_col, hole=0.5)
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # === SPECIALIZED ANALYTICS ===
+    
+    # Dim_Time specific analytics
+    if 'Hour' in df.columns and 'Minute' in df.columns:
+        st.markdown("### ⏱️ Time-Specific Analytics")
+        tcol1, tcol2 = st.columns(2)
+        
+        with tcol1:
+            hour_counts = df['Hour'].dropna().astype(int).value_counts().sort_index().reset_index()
+            hour_counts.columns = ['Hour', 'Count']
+            fig = px.bar(hour_counts, x='Hour', y='Count', title='Records by Hour', template='seaborn')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with tcol2:
+            fig = px.histogram(df.dropna(subset=['Minute']).astype({'Minute': 'int'}),
+                             x='Minute', nbins=12, title='Minute Distribution', template='seaborn')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # AM/PM analysis
+        time_text_col = 'TimeStr' if 'TimeStr' in df.columns else ('TimeObj' if 'TimeObj' in df.columns else None)
+        if time_text_col:
+            tcol3, tcol4 = st.columns(2)
+            texts = df[time_text_col].astype(str)
+            period = np.where(texts.str.contains('SA', case=False, na=False), 'AM',
+                            np.where(texts.str.contains('CH', case=False, na=False), 'PM', 'Unknown'))
+            
+            with tcol3:
+                pie_df = pd.DataFrame({'Period': period})['Period'].value_counts().reset_index()
+                pie_df.columns = ['Period', 'Count']
+                fig = px.pie(pie_df, values='Count', names='Period', hole=0.5, title='AM vs PM Distribution')
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tcol4:
+                top_times = texts.value_counts().head(20).reset_index()
+                top_times.columns = [time_text_col, 'Count']
+                fig = px.bar(top_times, x=time_text_col, y='Count', title=f'Top 20 {time_text_col}', template='seaborn')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+    
+    # Fact_AirQuality analytics
+    if 'Value' in df.columns and 'ParameterKey' in df.columns and 'LocationKey' in df.columns:
+        st.markdown("### 🌫️ Air Quality Analytics")
+        
+        df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
+        
+        # Parse dates/times
+        if 'DateKey' in df.columns and 'DateParsed' not in df.columns:
+            df['DateParsed'] = pd.to_datetime(df['DateKey'].astype(str), errors='coerce')
+        
+        if 'TimeKey' in df.columns and 'HourFromTimeKey' not in df.columns:
+            tk = df['TimeKey'].astype(str).str.zfill(4)
+            df['HourFromTimeKey'] = pd.to_numeric(tk.str.slice(0, 2), errors='coerce')
+        
+        aq1, aq2 = st.columns(2)
+        
+        with aq1:
+            fig = px.histogram(df.dropna(subset=['Value']), x='Value', nbins=40,
+                             title='Value Distribution', template='seaborn')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with aq2:
+            if 'HourFromTimeKey' in df.columns:
+                hourly = df.groupby('HourFromTimeKey')['Value'].mean().reset_index()
+                fig = px.line(hourly, x='HourFromTimeKey', y='Value',
+                            title='Average Value by Hour', template='seaborn', markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        aq3, aq4 = st.columns(2)
+        
+        with aq3:
+            if 'ParameterName' in df.columns:
+                param_agg = df.groupby('ParameterName')['Value'].mean().reset_index()
+                fig = px.bar(param_agg, x='ParameterName', y='Value',
+                           title='Average Value by Parameter', template='seaborn')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with aq4:
+            if 'LocationName' in df.columns:
+                loc_agg = df.groupby('LocationName')['Value'].mean().reset_index()
+                fig = px.bar(loc_agg, x='LocationName', y='Value',
+                           title='Average Value by Location', template='seaborn')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        # Time series
+        if 'DateParsed' in df.columns:
+            daily_agg = df.groupby('DateParsed')['Value'].mean().reset_index()
+            fig = px.line(daily_agg, x='DateParsed', y='Value',
+                        title='Air Quality Trend Over Time', template='seaborn', markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # Fact_Forecast analytics
+    if 'ForecastID' in df.columns and 'Value' in df.columns:
+        st.markdown("### 🔮 Forecast Analytics")
+        
+        df['Value'] = pd.to_numeric(df['Value'], errors='coerce')
+        
+        if 'DateKey' in df.columns and 'DateParsed' not in df.columns:
+            df['DateParsed'] = pd.to_datetime(df['DateKey'].astype(str), errors='coerce')
+        
+        if 'TimeKey' in df.columns and 'HourFromTimeKey' not in df.columns:
+            tk = df['TimeKey'].astype(str).str.zfill(4)
+            df['HourFromTimeKey'] = pd.to_numeric(tk.str.slice(0, 2), errors='coerce')
+        
+        fc1, fc2 = st.columns(2)
+        
+        with fc1:
+            fig = px.histogram(df.dropna(subset=['Value']), x='Value', nbins=30,
+                             title='Forecast Value Distribution', template='seaborn')
+            st.plotly_chart(fig, use_container_width=True)
+        
+        with fc2:
+            if 'HourFromTimeKey' in df.columns:
+                hourly = df.groupby('HourFromTimeKey')['Value'].mean().reset_index()
+                fig = px.line(hourly, x='HourFromTimeKey', y='Value',
+                            title='Average Forecast by Hour', template='seaborn', markers=True)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        fc3, fc4 = st.columns(2)
+        
+        with fc3:
+            if 'ParameterName' in df.columns:
+                param_agg = df.groupby('ParameterName')['Value'].mean().reset_index()
+                fig = px.bar(param_agg, x='ParameterName', y='Value',
+                           title='Average Forecast by Parameter', template='seaborn')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with fc4:
+            if 'ModelName' in df.columns:
+                model_agg = df.groupby('ModelName')['Value'].mean().reset_index()
+                fig = px.bar(model_agg, x='ModelName', y='Value',
+                           title='Average Forecast by Model', template='seaborn')
+                fig.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig, use_container_width=True)
+        
+        if 'DateParsed' in df.columns:
+            daily = df.groupby('DateParsed')['Value'].mean().reset_index()
+            fig = px.line(daily, x='DateParsed', y='Value',
+                        title='Forecast Trend Over Time', template='seaborn', markers=True)
+            st.plotly_chart(fig, use_container_width=True)
+    
+    # Data preview
+    with st.expander(f"📄 View {table_name} Data"):
+        st.dataframe(df.head(100), use_container_width=True)
+    
+    # Download option
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label=f"📥 Download {table_name} as CSV",
+        data=csv,
+        file_name=f"{table_name}.csv",
+        mime='text/csv',
+    )
+
+st.markdown("---")
+st.success("✅ All tables analyzed successfully!")
